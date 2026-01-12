@@ -63,13 +63,18 @@ class FaceSwapProvider extends ChangeNotifier {
       _progress = 0.1;
       notifyListeners();
 
+      print('FaceSwapProvider: Starting swapFace service call');
       _swappedGif = await _faceSwapService.swapFace(
         gifFile: _selectedGif!,
         faceImage: _selectedFaceImage!,
       );
 
+      print(
+        'FaceSwapProvider: Swap completed, result file: ${_swappedGif?.path}',
+      );
       _progress = 1.0;
     } catch (e) {
+      print('FaceSwapProvider: Error during swap - $e');
       _error = e.toString();
       _swappedGif = null;
     }

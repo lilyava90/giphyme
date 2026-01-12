@@ -87,7 +87,13 @@ class _ResultScreenState extends State<ResultScreen> {
   }
 
   Future<void> _startProcessing() async {
-    await context.read<FaceSwapProvider>().swapFace();
+    try {
+      print('ResultScreen: Starting face swap processing...');
+      await context.read<FaceSwapProvider>().swapFace();
+      print('ResultScreen: Face swap completed');
+    } catch (e) {
+      print('ResultScreen: Error during swap: $e');
+    }
   }
 
   Future<void> _saveToGallery() async {
@@ -333,7 +339,35 @@ class _ResultScreenState extends State<ResultScreen> {
                 ).textTheme.titleMedium?.copyWith(color: Colors.white),
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 24),
+
+              // Show the selected face that was used
+              if (provider.selectedFaceImage != null)
+                Column(
+                  children: [
+                    Text(
+                      'Face used for swap:',
+                      style: TextStyle(color: Colors.grey[400], fontSize: 14),
+                    ),
+                    const SizedBox(height: 8),
+                    Container(
+                      width: 100,
+                      height: 100,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.white, width: 2),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.file(
+                          provider.selectedFaceImage!,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+                ),
 
               // Show result GIF with animation
               Container(

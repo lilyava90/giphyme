@@ -39,6 +39,7 @@ dependencies:
   image_picker: ^1.0.4
   share_plus: ^7.2.0
   image_gallery_saver: ^2.0.1
+  image: ^4.1.0
   
   # HTTP and API
   http: ^1.1.0

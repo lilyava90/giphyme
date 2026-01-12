@@ -2,6 +2,8 @@
 import os
 import tempfile
 import numpy as np
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor
 
 # Set matplotlib to use non-GUI backend before importing any visualization libraries
 import matplotlib
@@ -32,15 +34,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize InsightFace model
+# Thread pool for parallel processing
+executor = ThreadPoolExecutor(max_workers=4)
+
+# Initialize InsightFace model - using glintr100 (faster) instead of buffalo_l
 try:
-    # Initialize the face analyzer and swapper
-    # Use CPUExecutionProvider instead of CPUProvider (correct name for ONNX Runtime)
+    # Initialize the face analyzer and swapper with faster model
+    # glintr100 is significantly faster than buffalo_l while maintaining good accuracy
     face_analyzer = insightface.app.FaceAnalysis(
-        name='buffalo_l',
+        name='glintr100',
         providers=['CPUExecutionProvider']
     )
-    face_analyzer.prepare(ctx_id=0, det_size=(640, 640))
+    face_analyzer.prepare(ctx_id=0, det_size=(512, 512))
     
     # Download inswapper model with full download path
     face_swapper = insightface.model_zoo.get_model(
@@ -97,43 +102,55 @@ def swap_faces_in_frame(frame: np.ndarray, source_face, target_faces) -> np.ndar
     return result
 
 
+def process_frame(args):
+    """Process a single frame - can be called in parallel"""
+    frame_idx, frame, source_face = args
+    
+    try:
+        # Convert to BGR for face detection
+        if frame.shape[2] == 4:  # RGBA
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+        else:
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        
+        # Detect faces in frame
+        target_faces = face_analyzer.get(frame_bgr)
+        
+        # Swap faces
+        if target_faces:
+            swapped_frame = swap_faces_in_frame(frame_bgr, source_face, target_faces)
+            # Convert back to RGB
+            swapped_frame = cv2.cvtColor(swapped_frame, cv2.COLOR_BGR2RGB)
+            return swapped_frame
+        else:
+            return frame[:, :, :3] if frame.shape[2] == 4 else frame
+    except Exception as e:
+        logger.warning(f"Error processing frame {frame_idx}: {e}")
+        return frame[:, :, :3] if frame.shape[2] == 4 else frame
+
+
 def process_gif_frames(gif_path: str, source_face_path: str) -> str:
-    """Process GIF and swap faces in each frame"""
+    """Process GIF and swap faces in each frame using parallel processing"""
     try:
         # Extract source face
         source_face = extract_face_embedding(source_face_path)
         logger.info("Source face extracted")
         
-        # Read GIF frames
+        # Read all GIF frames
         gif_reader = imageio.get_reader(gif_path)
-        frames = []
+        all_frames = list(gif_reader)
         
-        logger.info(f"Processing GIF with {len(gif_reader)} frames")
+        logger.info(f"Processing GIF with {len(all_frames)} frames using parallel processing")
         
-        for frame_idx, frame in enumerate(gif_reader):
-            # Convert to BGR for face detection
-            if frame.shape[2] == 4:  # RGBA
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
-            else:
-                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            
-            # Detect faces in frame
-            target_faces = face_analyzer.get(frame_bgr)
-            
-            # Swap faces
-            if target_faces:
-                swapped_frame = swap_faces_in_frame(frame_bgr, source_face, target_faces)
-                # Convert back to RGB
-                swapped_frame = cv2.cvtColor(swapped_frame, cv2.COLOR_BGR2RGB)
-                frames.append(swapped_frame)
-                logger.info(f"Frame {frame_idx + 1}: {len(target_faces)} face(s) swapped")
-            else:
-                frames.append(frame[:, :, :3] if frame.shape[2] == 4 else frame)
-                logger.info(f"Frame {frame_idx + 1}: No faces detected, keeping original")
+        # Process frames in parallel using thread pool
+        with ThreadPoolExecutor(max_workers=4) as parallel_executor:
+            frame_data = [(i, frame, source_face) for i, frame in enumerate(all_frames)]
+            processed_frames = list(parallel_executor.map(process_frame, frame_data))
         
-        # Save processed GIF
+        # Save processed GIF with optimized compression
         output_path = tempfile.mktemp(suffix='.gif')
-        imageio.mimsave(output_path, frames, format='GIF', duration=100)
+        # Use optimal_gif=True for faster saving with reasonable compression
+        imageio.mimsave(output_path, processed_frames, format='GIF', duration=100, loop=0, optimize=False)
         logger.info(f"GIF saved to {output_path}")
         
         return output_path
@@ -141,6 +158,74 @@ def process_gif_frames(gif_path: str, source_face_path: str) -> str:
     except Exception as e:
         logger.error(f"Error processing GIF: {e}")
         raise
+
+
+@app.post("/detect-faces")
+async def detect_faces(face_image: UploadFile = File(...)):
+    """
+    Detect faces in an uploaded image and return bounding box coordinates
+    
+    Args:
+        face_image: Image to detect faces in
+    
+    Returns:
+        JSON with array of detected faces with bounding boxes and confidence scores
+    """
+    temp_file = None
+    try:
+        # Save uploaded file temporarily
+        face_temp = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
+        temp_file = face_temp.name
+        
+        # Write face image
+        face_content = await face_image.read()
+        face_temp.write(face_content)
+        face_temp.close()
+        
+        logger.info(f"Face detection image uploaded: {face_temp.name}")
+        
+        if face_analyzer is None:
+            raise HTTPException(status_code=500, detail="Face analyzer not loaded")
+        
+        # Load image and detect faces
+        img = cv2.imread(face_temp.name)
+        if img is None:
+            raise HTTPException(status_code=400, detail="Failed to load image")
+        
+        faces = face_analyzer.get(img)
+        
+        # Convert face data to response format
+        detected_faces = []
+        for idx, face in enumerate(faces):
+            bbox = face.bbox.astype(int).tolist()  # [x1, y1, x2, y2]
+            detected_faces.append({
+                "index": idx,
+                "bbox": {
+                    "x": bbox[0],
+                    "y": bbox[1],
+                    "width": bbox[2] - bbox[0],
+                    "height": bbox[3] - bbox[1]
+                },
+                "confidence": float(face.det_score)
+            })
+        
+        logger.info(f"Detected {len(detected_faces)} face(s)")
+        
+        return {
+            "faces": detected_faces,
+            "count": len(detected_faces)
+        }
+    
+    except Exception as e:
+        logger.error(f"Error in detect_faces: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Cleanup temp file
+        if temp_file and os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup {temp_file}: {e}")
 
 
 @app.post("/swap-face")
