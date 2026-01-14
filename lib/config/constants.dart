@@ -11,7 +11,7 @@ const String GIPHY_API_KEY = 'W6o9fJJuJzsH3dmknjTTbhVRjANCajK9';
 // flutter run --dart-define=BACKEND_URL=https://api.yourdomain.com
 const String BACKEND_URL = String.fromEnvironment(
   'BACKEND_URL',
-  defaultValue: 'http://192.168.68.55:8000',
+  defaultValue: 'http://192.168.68.69:8000',
 );
 
 // App Configuration

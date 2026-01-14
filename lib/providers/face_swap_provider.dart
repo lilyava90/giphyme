@@ -59,20 +59,50 @@ class FaceSwapProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      // Simulate progress updates
-      _progress = 0.1;
-      notifyListeners();
-
       print('FaceSwapProvider: Starting swapFace service call');
-      _swappedGif = await _faceSwapService.swapFace(
-        gifFile: _selectedGif!,
-        faceImage: _selectedFaceImage!,
-      );
+
+      // Start the actual swap
+      File? result;
+      final swapFuture = _faceSwapService
+          .swapFace(gifFile: _selectedGif!, faceImage: _selectedFaceImage!)
+          .then((r) {
+            result = r;
+            return r;
+          });
+
+      // Smooth progress simulation from 0% to 95%
+      final stopwatch = Stopwatch()..start();
+      const totalSteps = 95; // Progress from 0 to 95%
+      const stepDuration = Duration(milliseconds: 800); // Update every 800ms
+
+      for (int step = 0; step <= totalSteps && result == null; step++) {
+        _updateProgress(step / 100.0);
+
+        // Wait for step duration, but check if swap completed
+        final checkInterval = Duration(milliseconds: 100);
+        for (
+          int i = 0;
+          i < stepDuration.inMilliseconds ~/ checkInterval.inMilliseconds;
+          i++
+        ) {
+          await Future.delayed(checkInterval);
+          if (result != null) break;
+        }
+      }
+
+      // If still processing, wait for completion
+      if (result == null) {
+        _swappedGif = await swapFuture;
+      } else {
+        _swappedGif = result;
+      }
 
       print(
         'FaceSwapProvider: Swap completed, result file: ${_swappedGif?.path}',
       );
-      _progress = 1.0;
+
+      // Final progress to 100%
+      _updateProgress(1.0);
     } catch (e) {
       print('FaceSwapProvider: Error during swap - $e');
       _error = e.toString();
@@ -80,6 +110,11 @@ class FaceSwapProvider extends ChangeNotifier {
     }
 
     _isProcessing = false;
+    notifyListeners();
+  }
+
+  void _updateProgress(double value) {
+    _progress = value;
     notifyListeners();
   }
 

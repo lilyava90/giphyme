@@ -23,9 +23,25 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
   bool _isDetectingFaces = false;
 
   Future<void> _takePicture() async {
-    final result = await _imagePicker.pickImage(source: ImageSource.camera);
-    if (result != null && mounted) {
-      await _handleImageSelection(File(result.path));
+    try {
+      print('PhotoCaptureScreen: Opening camera...');
+      final result = await _imagePicker.pickImage(source: ImageSource.camera);
+      print('PhotoCaptureScreen: Camera result - $result');
+      if (result != null && mounted) {
+        await _handleImageSelection(File(result.path));
+      } else {
+        print('PhotoCaptureScreen: No image selected or widget unmounted');
+      }
+    } catch (e) {
+      print('PhotoCaptureScreen: Error taking picture - $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error taking photo: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
@@ -217,19 +233,7 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
       // Fallback to icon display
       return Container(
         color: Colors.grey[700],
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.face, color: Colors.white, size: 40),
-              const SizedBox(height: 4),
-              Text(
-                '${(face.confidence * 100).toStringAsFixed(0)}%',
-                style: const TextStyle(color: Colors.white, fontSize: 10),
-              ),
-            ],
-          ),
-        ),
+        child: Center(child: Icon(Icons.face, color: Colors.white, size: 40)),
       );
     }
   }
@@ -621,43 +625,6 @@ class _PhotoCaptureScreenState extends State<PhotoCaptureScreen> {
                 ),
 
               const SizedBox(height: 32),
-
-              // List of detected faces
-              ...List.generate(_detectedFaces!.length, (index) {
-                final face = _detectedFaces![index];
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 12.0),
-                  child: OutlinedButton(
-                    onPressed: () => _selectFace(face),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.white,
-                      side: const BorderSide(color: Colors.white, width: 2),
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    child: Row(
-                      children: [
-                        Icon(Icons.face, color: Colors.white),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            'Face ${index + 1} (${(face.confidence * 100).toStringAsFixed(0)}% confidence)',
-                            style: const TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                        const Icon(Icons.arrow_forward_ios, size: 16),
-                      ],
-                    ),
-                  ),
-                );
-              }),
-
-              const SizedBox(height: 16),
 
               // Cancel button
               TextButton(

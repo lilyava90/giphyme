@@ -133,15 +133,56 @@ class _ResultScreenState extends State<ResultScreen> {
     if (provider.swappedGif == null) return;
 
     try {
-      await Share.shareXFiles([
-        XFile(provider.swappedGif!.path),
-      ], text: 'Check out my awesome face-swapped GIF! 🎬✨');
+      final gifFile = provider.swappedGif!;
+
+      // Verify file exists and is readable
+      if (!await gifFile.exists()) {
+        throw Exception('GIF file not found');
+      }
+
+      // Get file size to verify it's valid
+      final fileSize = await gifFile.length();
+      if (fileSize == 0) {
+        throw Exception('GIF file is empty');
+      }
+
+      print('Sharing GIF: ${gifFile.path}, size: $fileSize bytes');
+
+      // Get screen size for share sheet positioning (required for iPad)
+      final box = context.findRenderObject() as RenderBox?;
+      final sharePositionOrigin = box != null
+          ? box.localToGlobal(Offset.zero) & box.size
+          : null;
+
+      // Share with proper MIME type for GIF
+      final result = await Share.shareXFiles(
+        [XFile(gifFile.path, mimeType: 'image/gif')],
+        text: 'Check out my face-swapped GIF! 🎬✨',
+        subject: 'GiphyMe Face Swap',
+        sharePositionOrigin: sharePositionOrigin,
+      );
+
+      print('Share result: ${result.status}');
+
+      if (result.status == ShareResultStatus.success) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Shared successfully! ✨'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 2),
+            ),
+          );
+        }
+      }
     } catch (e) {
+      print('Share error: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to share: ${e.toString()}'),
             backgroundColor: Colors.red[400],
+            duration: const Duration(seconds: 3),
           ),
         );
       }
@@ -205,7 +246,7 @@ class _ResultScreenState extends State<ResultScreen> {
             ),
             const SizedBox(height: 16),
             Text(
-              'This may take 30-120 seconds...',
+              'This may take up to 60 seconds for processing',
               style: Theme.of(
                 context,
               ).textTheme.bodyLarge?.copyWith(color: Colors.grey[400]),

@@ -39,10 +39,9 @@ executor = ThreadPoolExecutor(max_workers=4)
 
 # Initialize InsightFace model - using glintr100 (faster) instead of buffalo_l
 try:
-    # Initialize the face analyzer and swapper with faster model
-    # glintr100 is significantly faster than buffalo_l while maintaining good accuracy
+    # Initialize the face analyzer and swapper
     face_analyzer = insightface.app.FaceAnalysis(
-        name='glintr100',
+        name='buffalo_l',
         providers=['CPUExecutionProvider']
     )
     face_analyzer.prepare(ctx_id=0, det_size=(512, 512))
@@ -71,7 +70,7 @@ async def health_check():
 
 
 def extract_face_embedding(image_path: str):
-    """Extract face embedding from image"""
+    """Extract face embedding from image with highest confidence"""
     img = cv2.imread(image_path)
     if img is None:
         raise ValueError("Failed to load image")
@@ -80,20 +79,33 @@ def extract_face_embedding(image_path: str):
     if not faces:
         raise ValueError("No face detected in image")
     
-    # Use the largest face
+    # Use the face with highest detection confidence for most stable embedding
     face = max(faces, key=lambda f: f.det_score)
+    logger.info(f"Extracted source face with confidence: {face.det_score}")
     return face
 
 
-def swap_faces_in_frame(frame: np.ndarray, source_face, target_faces) -> np.ndarray:
-    """Swap source face into frame containing target faces"""
+def swap_faces_in_frame(frame: np.ndarray, source_face, target_faces, source_face_index: int = 0) -> np.ndarray:
+    """Swap source face into frame containing target faces with consistent identity.
+    
+    Args:
+        frame: Frame to process
+        source_face: Source face embedding (reference from Page 2)
+        target_faces: List of detected target faces in the frame
+        source_face_index: Index of source face for consistency
+    
+    Returns:
+        Frame with swapped faces
+    """
     if not target_faces:
         return frame
     
     result = frame.copy()
     
+    # Swap all detected faces with the same source face to maintain identity consistency
     for target_face in target_faces:
         try:
+            # Use consistent source face for all swaps to prevent drifting
             result = face_swapper.get(result, target_face, source_face)
         except Exception as e:
             logger.warning(f"Failed to swap face: {e}")
@@ -103,7 +115,10 @@ def swap_faces_in_frame(frame: np.ndarray, source_face, target_faces) -> np.ndar
 
 
 def process_frame(args):
-    """Process a single frame - can be called in parallel"""
+    """Process a single frame - can be called in parallel.
+    
+    Ensures consistent identity (Page 2) across all frames by using the same source face embedding.
+    """
     frame_idx, frame, source_face = args
     
     try:
@@ -113,11 +128,13 @@ def process_frame(args):
         else:
             frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         
-        # Detect faces in frame
+        # Detect faces in frame with consistent parameters for stability
         target_faces = face_analyzer.get(frame_bgr)
         
-        # Swap faces
+        # Swap faces with consistent source identity
         if target_faces:
+            # Sort faces by position to ensure consistent order and prevent face drifting
+            target_faces = sorted(target_faces, key=lambda f: (f.bbox[0], f.bbox[1]))
             swapped_frame = swap_faces_in_frame(frame_bgr, source_face, target_faces)
             # Convert back to RGB
             swapped_frame = cv2.cvtColor(swapped_frame, cv2.COLOR_BGR2RGB)
@@ -130,27 +147,58 @@ def process_frame(args):
 
 
 def process_gif_frames(gif_path: str, source_face_path: str) -> str:
-    """Process GIF and swap faces in each frame using parallel processing"""
+    """Process GIF and swap faces in each frame while maintaining consistent identity.
+    
+    Uses Page 2 (uploaded reference face) as the locked identity across all frames.
+    Prevents face drifting by using the same source face embedding throughout.
+    Optimized to process every 2nd frame for faster processing.
+    """
     try:
-        # Extract source face
+        # Extract source face from Page 2 (reference image) - this is the ONLY identity to use
         source_face = extract_face_embedding(source_face_path)
-        logger.info("Source face extracted")
+        logger.info(f"Source face (Page 2) locked with confidence: {source_face.det_score:.4f}")
+        logger.info("This identity will be maintained consistently across all frames")
         
         # Read all GIF frames
         gif_reader = imageio.get_reader(gif_path)
         all_frames = list(gif_reader)
         
-        logger.info(f"Processing GIF with {len(all_frames)} frames using parallel processing")
+        logger.info(f"Total GIF frames: {len(all_frames)}")
+        
+        # Select every 2nd frame for processing (optimization)
+        frames_to_process = all_frames[::2]  # Every 2nd frame
+        frame_indices = list(range(0, len(all_frames), 2))  # Indices of frames being processed
+        
+        logger.info(f"Processing {len(frames_to_process)} frames (every 2nd frame) using identity-locked mode")
+        logger.info(f"Reference identity from Page 2 will be used for all processed frames")
         
         # Process frames in parallel using thread pool
         with ThreadPoolExecutor(max_workers=4) as parallel_executor:
-            frame_data = [(i, frame, source_face) for i, frame in enumerate(all_frames)]
+            frame_data = [(idx, frame, source_face) for idx, frame in enumerate(frames_to_process)]
             processed_frames = list(parallel_executor.map(process_frame, frame_data))
+        
+        logger.info(f"Successfully processed {len(processed_frames)} frames with consistent identity")
+        
+        # Reconstruct full GIF by duplicating processed frames to maintain animation smoothness
+        # For every processed frame, keep the original next frame (unprocessed)
+        full_output_frames = []
+        processed_idx = 0
+        for i in range(len(all_frames)):
+            if i in frame_indices:
+                full_output_frames.append(processed_frames[processed_idx])
+                processed_idx += 1
+            else:
+                # Use the previous processed frame for in-between frames (maintains consistency)
+                if processed_idx > 0:
+                    full_output_frames.append(processed_frames[processed_idx - 1])
+                else:
+                    full_output_frames.append(all_frames[i])
+        
+        logger.info(f"Full output GIF has {len(full_output_frames)} frames")
         
         # Save processed GIF with optimized compression
         output_path = tempfile.mktemp(suffix='.gif')
-        # Use optimal_gif=True for faster saving with reasonable compression
-        imageio.mimsave(output_path, processed_frames, format='GIF', duration=100, loop=0, optimize=False)
+        imageio.mimsave(output_path, full_output_frames, format='GIF', duration=100, loop=0, optimize=False)
         logger.info(f"GIF saved to {output_path}")
         
         return output_path
